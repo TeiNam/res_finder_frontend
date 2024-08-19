@@ -1,8 +1,9 @@
-import React, { useState, useCallback, useEffect, useMemo } from 'react';
+import React, { useState, useCallback, useEffect, useMemo, lazy, Suspense } from 'react';
 import axios from 'axios';
-import StoreList from './StoreList';
-import StorePopup from './StorePopup';
 import useGoogleMapsApi from '../hooks/useGoogleMapsApi';
+
+const StoreList = lazy(() => import('./StoreList'));
+const StorePopup = lazy(() => import('./StorePopup'));
 
 const containerStyle = {
   display: 'flex',
@@ -26,7 +27,6 @@ const Map = () => {
 
   const fetchNearbyStores = useCallback(async (longitude, latitude) => {
     try {
-      console.log(`Fetching stores near: ${latitude}, ${longitude}`);
       const response = await axios.get(`${process.env.REACT_APP_API_BASE_URL}/api/v1/stores/nearby`, {
         params: {
           longitude,
@@ -38,7 +38,6 @@ const Map = () => {
           'Cache-Control': 'max-age=300'
         }
       });
-      console.log('Fetched stores:', response.data);
       setStores(response.data);
     } catch (error) {
       console.error("Error fetching nearby stores:", error.response || error);
@@ -48,22 +47,21 @@ const Map = () => {
   useEffect(() => {
     if (navigator.geolocation && isGoogleMapsLoaded) {
       navigator.geolocation.getCurrentPosition(
-        (position) => {
-          const { latitude, longitude, accuracy } = position.coords;
-          console.log(`Current position: ${latitude}, ${longitude}, Accuracy: ${accuracy} meters`);
-          const location = { lat: latitude, lng: longitude };
-          setCenter(location);
-          setCurrentLocation(location);
-          fetchNearbyStores(longitude, latitude);
-        },
-        (error) => {
-          console.error("Geolocation error:", error);
-        },
-        {
-          enableHighAccuracy: true,
-          timeout: 10000,
-          maximumAge: 0
-        }
+          (position) => {
+            const { latitude, longitude } = position.coords;
+            const location = { lat: latitude, lng: longitude };
+            setCenter(location);
+            setCurrentLocation(location);
+            fetchNearbyStores(longitude, latitude);
+          },
+          (error) => {
+            console.error("Geolocation error:", error);
+          },
+          {
+            enableHighAccuracy: true,
+            timeout: 10000,
+            maximumAge: 0
+          }
       );
     } else if (!navigator.geolocation) {
       console.error("Error: Your browser doesn't support geolocation.");
@@ -84,7 +82,7 @@ const Map = () => {
     ]
   }), []);
 
-  useEffect(() => {
+  const initMap = useCallback(() => {
     if (center && !map && isGoogleMapsLoaded && window.google) {
       const newMap = new window.google.maps.Map(document.getElementById("map"), {
         center: center,
@@ -102,6 +100,10 @@ const Map = () => {
     }
   }, [center, map, mapOptions, isGoogleMapsLoaded]);
 
+  useEffect(() => {
+    initMap();
+  }, [initMap]);
+
   const handleMarkerClick = useCallback((store, marker) => {
     setSelectedStore(store);
 
@@ -109,20 +111,20 @@ const Map = () => {
     map.setCenter(markerPosition);
     map.setZoom(18);
 
-    setTimeout(() => {
+    requestAnimationFrame(() => {
       const mapDiv = document.getElementById('map');
       const mapRect = mapDiv.getBoundingClientRect();
       const scale = Math.pow(2, map.getZoom());
       const pixelOffset = new window.google.maps.Point(
-        (markerPosition.lng() - map.getCenter().lng()) * (mapRect.width / 360) * scale,
-        (map.getCenter().lat() - markerPosition.lat()) * (mapRect.height / 180) * scale
+          (markerPosition.lng() - map.getCenter().lng()) * (mapRect.width / 360) * scale,
+          (map.getCenter().lat() - markerPosition.lat()) * (mapRect.height / 180) * scale
       );
 
       const popupX = mapRect.left + mapRect.width / 2 + pixelOffset.x;
       const popupY = mapRect.top + mapRect.height / 2 + pixelOffset.y;
 
       setPopupPosition({ x: popupX, y: popupY });
-    }, 100);
+    });
   }, [map]);
 
   const handleStoreSelect = useCallback((store) => {
@@ -132,8 +134,8 @@ const Map = () => {
       map.setZoom(18);
 
       const selectedMarker = map.markers.find(marker =>
-        marker.getPosition().lat() === storePosition.lat &&
-        marker.getPosition().lng() === storePosition.lng
+          marker.getPosition().lat() === storePosition.lat &&
+          marker.getPosition().lng() === storePosition.lng
       );
       if (selectedMarker) {
         handleMarkerClick(store, selectedMarker);
@@ -156,12 +158,14 @@ const Map = () => {
     setPopupPosition(null);
   }, []);
 
-  useEffect(() => {
+  const updateMarkers = useCallback(() => {
     if (map && center && isGoogleMapsLoaded && window.google) {
       map.setCenter(center);
 
-      map.markers?.forEach(marker => marker.setMap(null));
-      map.overlays?.forEach(overlay => overlay.setMap(null));
+      if (map.markers) {
+        map.markers.forEach(marker => marker.setMap(null));
+        map.overlays.forEach(overlay => overlay.setMap(null));
+      }
       map.markers = [];
       map.overlays = [];
 
@@ -244,6 +248,10 @@ const Map = () => {
   }, [map, center, stores, handleMarkerClick, isGoogleMapsLoaded, handleClosePopup]);
 
   useEffect(() => {
+    updateMarkers();
+  }, [updateMarkers]);
+
+  useEffect(() => {
     return () => {
       if (map) {
         window.google.maps.event.clearInstanceListeners(map);
@@ -255,21 +263,23 @@ const Map = () => {
   if (!center) return <div>Loading... Please enable location services if prompted.</div>;
 
   return (
-    <div style={containerStyle}>
-      <div id="map" style={mapStyle}></div>
-      <StoreList
-        stores={stores}
-        onStoreSelect={handleStoreSelect}
-        onReturnToCurrentLocation={handleReturnToCurrentLocation}
-      />
-      {selectedStore && popupPosition && (
-        <StorePopup
-          store={selectedStore}
-          position={popupPosition}
-          onClose={handleClosePopup}
-        />
-      )}
-    </div>
+      <div style={containerStyle}>
+        <div id="map" style={mapStyle}></div>
+        <Suspense fallback={<div>Loading...</div>}>
+          <StoreList
+              stores={stores}
+              onStoreSelect={handleStoreSelect}
+              onReturnToCurrentLocation={handleReturnToCurrentLocation}
+          />
+          {selectedStore && popupPosition && (
+              <StorePopup
+                  store={selectedStore}
+                  position={popupPosition}
+                  onClose={handleClosePopup}
+              />
+          )}
+        </Suspense>
+      </div>
   );
 }
 
